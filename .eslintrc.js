@@ -1,4 +1,6 @@
-{
+"use strict";
+
+module.exports = {
   "rules": {
     // Braces only needed for multi-line arrow function blocks
     // "arrow-body-style": [2, "as-needed"],
@@ -161,11 +163,17 @@
     // No using with
     "no-with": 2,
 
+    // No if/while/for blocks on the same line as the if/while/for statement:
+    "nonblock-statement-body-position": [2, "below"],
+
     // Always require semicolon at end of statement
     "semi": [2, "always"],
 
     // Require space after keywords
     "keyword-spacing": 2,
+
+    // Always use double quotes
+    "quotes": [2, "double", {"avoidEscape": true}],
 
     // Require space before blocks
     "space-before-blocks": 2,

@@ -1,5 +1,6 @@
-var jsdom = require("jsdom").jsdom;
+var JSDOM = require("jsdom").JSDOM;
 var chai = require("chai");
+var sinon = require("sinon");
 chai.config.includeStack = true;
 var expect = chai.expect;
 
@@ -49,19 +50,19 @@ function htmlTransform(str) {
   return str.replace(/\s+/g, " ");
 }
 
-function runTestsWithItems(label, domGenerationFn, uri, source, expectedContent, expectedMetadata) {
+function runTestsWithItems(label, domGenerationFn, source, expectedContent, expectedMetadata) {
   describe(label, function() {
-    this.timeout(5000);
+    this.timeout(10000);
 
     var result;
 
     before(function() {
       try {
         var doc = domGenerationFn(source);
-        var myReader = new Readability(uri, doc);
-        var readerable = myReader.isProbablyReaderable();
+        // Provide one class name to preserve, which we know appears in a few
+        // of the test documents.
+        var myReader = new Readability(doc, { classesToPreserve: ["caption"] });
         result = myReader.parse();
-        result.readerable = readerable;
       } catch (err) {
         throw reformatError(err);
       }
@@ -88,6 +89,30 @@ function runTestsWithItems(label, domGenerationFn, uri, source, expectedContent,
         }
         return rv;
       }
+
+      function genPath(node) {
+        if (node.id) {
+          return "#" + node.id;
+        }
+        if (node.tagName == "BODY") {
+          return "body";
+        }
+        var parent = node.parentNode;
+        var parentPath = genPath(parent);
+        var index = Array.prototype.indexOf.call(parent.childNodes, node) + 1;
+        return parentPath + " > " + nodeStr(node) + ":nth-child(" + index + ")";
+      }
+
+      function findableNodeDesc(node) {
+        return genPath(node) + "(in: ``" + node.parentNode.innerHTML + "``)";
+      }
+
+      function attributesForNode(node) {
+        return Array.from(node.attributes).map(function(attr) {
+          return attr.name + "=" + attr.value;
+        }).join(",");
+      }
+
       var actualDOM = domGenerationFn(result.content);
       var expectedDOM = domGenerationFn(expectedContent);
       traverseDOM(function(actualNode, expectedNode) {
@@ -96,25 +121,28 @@ function runTestsWithItems(label, domGenerationFn, uri, source, expectedContent,
           var actualDesc = nodeStr(actualNode);
           var expectedDesc = nodeStr(expectedNode);
           if (actualDesc != expectedDesc) {
-            expect(actualDesc).eql(expectedDesc);
+            expect(actualDesc, findableNodeDesc(actualNode)).eql(expectedDesc);
             return false;
           }
           // Compare text for text nodes:
           if (actualNode.nodeType == 3) {
             var actualText = htmlTransform(actualNode.textContent);
             var expectedText = htmlTransform(expectedNode.textContent);
-            expect(actualText).eql(expectedText);
+            expect(actualText, findableNodeDesc(actualNode)).eql(expectedText);
             if (actualText != expectedText) {
               return false;
             }
           // Compare attributes for element nodes:
           } else if (actualNode.nodeType == 1) {
-            expect(actualNode.attributes.length).eql(expectedNode.attributes.length);
+            var actualNodeDesc = attributesForNode(actualNode);
+            var expectedNodeDesc = attributesForNode(expectedNode);
+            var desc = "node " + nodeStr(actualNode) + " attributes (" + actualNodeDesc + ") should match (" + expectedNodeDesc + ") ";
+            expect(actualNode.attributes.length, desc).eql(expectedNode.attributes.length);
             for (var i = 0; i < actualNode.attributes.length; i++) {
               var attr = actualNode.attributes[i].name;
               var actualValue = actualNode.getAttribute(attr);
               var expectedValue = expectedNode.getAttribute(attr);
-              expect(expectedValue, "node '" + actualDesc + "' attribute " + attr + " should match").eql(actualValue);
+              expect(expectedValue, "node (" + findableNodeDesc(actualNode) + ") attribute " + attr + " should match").eql(actualValue);
             }
           }
         } else {
@@ -136,8 +164,12 @@ function runTestsWithItems(label, domGenerationFn, uri, source, expectedContent,
       expect(expectedMetadata.excerpt).eql(result.excerpt);
     });
 
-    it("should probably be readerable", function() {
-      expect(expectedMetadata.readerable).eql(result.readerable);
+    it("should extract expected site name", function() {
+      expect(expectedMetadata.siteName).eql(result.siteName);
+    });
+
+    expectedMetadata.dir && it("should extract expected direction", function() {
+      expect(expectedMetadata.dir).eql(result.dir);
     });
   });
 }
@@ -155,68 +187,97 @@ function removeCommentNodesRecursively(node) {
 
 describe("Readability API", function() {
   describe("#constructor", function() {
+    var doc = new JSDOMParser().parse("<html><div>yo</div></html>");
     it("should accept a debug option", function() {
-      expect(new Readability({}, {})._debug).eql(false);
-      expect(new Readability({}, {}, {debug: true})._debug).eql(true);
+      expect(new Readability(doc)._debug).eql(false);
+      expect(new Readability(doc, {debug: true})._debug).eql(true);
     });
 
     it("should accept a nbTopCandidates option", function() {
-      expect(new Readability({}, {})._nbTopCandidates).eql(5);
-      expect(new Readability({}, {}, {nbTopCandidates: 42})._nbTopCandidates).eql(42);
-    });
-
-    it("should accept a maxPages option", function() {
-      expect(new Readability({}, {})._maxPages).eql(5);
-      expect(new Readability({}, {}, {maxPages: 42})._maxPages).eql(42);
+      expect(new Readability(doc)._nbTopCandidates).eql(5);
+      expect(new Readability(doc, {nbTopCandidates: 42})._nbTopCandidates).eql(42);
     });
 
     it("should accept a maxElemsToParse option", function() {
-      expect(new Readability({}, {})._maxElemsToParse).eql(0);
-      expect(new Readability({}, {}, {maxElemsToParse: 42})._maxElemsToParse).eql(42);
+      expect(new Readability(doc)._maxElemsToParse).eql(0);
+      expect(new Readability(doc, {maxElemsToParse: 42})._maxElemsToParse).eql(42);
+    });
+
+    it("should accept a keepClasses option", function() {
+      expect(new Readability(doc)._keepClasses).eql(false);
+      expect(new Readability(doc, {keepClasses: true})._keepClasses).eql(true);
+      expect(new Readability(doc, {keepClasses: false})._keepClasses).eql(false);
     });
   });
 
   describe("#parse", function() {
+    var exampleSource = testPages[0].source;
+
     it("shouldn't parse oversized documents as per configuration", function() {
       var doc = new JSDOMParser().parse("<html><div>yo</div></html>");
       expect(function() {
-        new Readability({}, doc, {maxElemsToParse: 1}).parse();
+        new Readability(doc, {maxElemsToParse: 1}).parse();
       }).to.Throw("Aborting parsing document; 2 elements found");
     });
+
+    it("should run _cleanClasses with default configuration", function() {
+      var doc = new JSDOMParser().parse(exampleSource);
+      var parser = new Readability(doc);
+
+      parser._cleanClasses = sinon.fake();
+
+      parser.parse();
+
+      expect(parser._cleanClasses.called).eql(true);
+    });
+
+    it("should run _cleanClasses when option keepClasses = false", function() {
+      var doc = new JSDOMParser().parse(exampleSource);
+      var parser = new Readability(doc, {keepClasses: false});
+
+      parser._cleanClasses = sinon.fake();
+
+      parser.parse();
+
+      expect(parser._cleanClasses.called).eql(true);
+    });
+
+    it("shouldn't run _cleanClasses when option keepClasses = true", function() {
+      var doc = new JSDOMParser().parse(exampleSource);
+      var parser = new Readability(doc, {keepClasses: true});
+
+      parser._cleanClasses = sinon.fake();
+
+      parser.parse();
+
+      expect(parser._cleanClasses.called).eql(false);
+    });
+
   });
 });
 
 describe("Test pages", function() {
   testPages.forEach(function(testPage) {
     describe(testPage.dir, function() {
-      var uri = {
-        spec: "http://fakehost/test/page.html",
-        host: "fakehost",
-        prePath: "http://fakehost",
-        scheme: "http",
-        pathBase: "http://fakehost/test/"
-      };
+      var uri = "http://fakehost/test/page.html";
 
       runTestsWithItems("jsdom", function(source) {
-        var doc = jsdom(source, {
-          features: {
-            FetchExternalResources: false,
-            ProcessExternalResources: false
-          }
-        });
+        var doc = new JSDOM(source, {
+          url: uri,
+        }).window.document;
         removeCommentNodesRecursively(doc);
         return doc;
-      }, uri, testPage.source, testPage.expectedContent, testPage.expectedMetadata);
+      }, testPage.source, testPage.expectedContent, testPage.expectedMetadata);
 
       runTestsWithItems("JSDOMParser", function(source) {
         var parser = new JSDOMParser();
-        var doc = parser.parse(source);
+        var doc = parser.parse(source, uri);
         if (parser.errorState) {
           console.error("Parsing this DOM caused errors:", parser.errorState);
           return null;
         }
         return doc;
-      }, uri, testPage.source, testPage.expectedContent, testPage.expectedMetadata);
+      }, testPage.source, testPage.expectedContent, testPage.expectedMetadata);
     });
   });
 });

@@ -6,10 +6,10 @@ var readability = require("../index.js");
 var JSDOMParser = readability.JSDOMParser;
 
 var BASETESTCASE = '<html><body><p>Some text and <a class="someclass" href="#">a link</a></p>' +
-                   '<div id="foo">With a <script>With < fancy " characters in it because' +
+                   '<div id="foo">With a <script>With &lt; fancy " characters in it because' +
                    '</script> that is fun.<span>And another node to make it harder</span></div><form><input type="text"/><input type="number"/>Here\'s a form</form></body></html>';
 
-var baseDoc = new JSDOMParser().parse(BASETESTCASE);
+var baseDoc = new JSDOMParser().parse(BASETESTCASE, "http://fakehost/");
 
 describe("Test JSDOM functionality", function() {
   function nodeExpect(actual, expected) {
@@ -32,9 +32,14 @@ describe("Test JSDOM functionality", function() {
     expect(generatedHTML).eql('Some text and <a class="someclass" href="#">a link</a>');
     var scriptNode = baseDoc.getElementsByTagName("script")[0];
     generatedHTML = scriptNode.innerHTML;
-    expect(generatedHTML).eql('With < fancy " characters in it because');
+    expect(generatedHTML).eql('With &lt; fancy " characters in it because');
     expect(scriptNode.textContent).eql('With < fancy " characters in it because');
 
+  });
+
+  it("should have basic URI information", function() {
+    expect(baseDoc.documentURI, "http://fakehost/");
+    expect(baseDoc.baseURI, "http://fakehost/");
   });
 
   it("should deal with script tags", function() {
@@ -110,7 +115,7 @@ describe("Test JSDOM functionality", function() {
   });
 
   it("should have a working replaceChild", function() {
-    var parent = baseDoc.getElementsByTagName('div')[0];
+    var parent = baseDoc.getElementsByTagName("div")[0];
     var p = baseDoc.createElement("p");
     p.setAttribute("id", "my-replaced-kid");
     var childCount = parent.childNodes.length;
@@ -236,7 +241,7 @@ describe("Script parsing", function() {
     expect(doc.firstChild.tagName).eql("SCRIPT");
     expect(doc.firstChild.textContent).eql("");
     expect(doc.firstChild.children.length).eql(0);
-    expect(doc.firstChild.childNodes.length).eql(1);
+    expect(doc.firstChild.childNodes.length).eql(0);
   });
 
   it("should strip !-based comments within script tags", function() {
@@ -245,11 +250,11 @@ describe("Script parsing", function() {
     expect(doc.firstChild.tagName).eql("SCRIPT");
     expect(doc.firstChild.textContent).eql("");
     expect(doc.firstChild.children.length).eql(0);
-    expect(doc.firstChild.childNodes.length).eql(1);
+    expect(doc.firstChild.childNodes.length).eql(0);
   });
 
   it("should strip any other nodes within script tags", function() {
-    var html = "<script><div>Hello, I'm not really in a </div></script>";
+    var html = "<script>&lt;div>Hello, I'm not really in a &lt;/div></script>";
     var doc = new JSDOMParser().parse(html);
     expect(doc.firstChild.tagName).eql("SCRIPT");
     expect(doc.firstChild.textContent).eql("<div>Hello, I'm not really in a </div>");
@@ -257,8 +262,17 @@ describe("Script parsing", function() {
     expect(doc.firstChild.childNodes.length).eql(1);
   });
 
+  it("should strip any other invalid script nodes within script tags", function() {
+    var html = '<script>&lt;script src="foo.js">&lt;/script></script>';
+    var doc = new JSDOMParser().parse(html);
+    expect(doc.firstChild.tagName).eql("SCRIPT");
+    expect(doc.firstChild.textContent).eql("<script src=\"foo.js\"></script>");
+    expect(doc.firstChild.children.length).eql(0);
+    expect(doc.firstChild.childNodes.length).eql(1);
+  });
+
   it("should not be confused by partial closing tags", function() {
-    var html = "<script>var x = '<script>Hi<' + '/script>';</script>";
+    var html = "<script>var x = '&lt;script>Hi&lt;' + '/script>';</script>";
     var doc = new JSDOMParser().parse(html);
     expect(doc.firstChild.tagName).eql("SCRIPT");
     expect(doc.firstChild.textContent).eql("var x = '<script>Hi<' + '/script>';");
@@ -289,5 +303,36 @@ describe("Recovery from self-closing tags that have close tags", function() {
     expect(doc.firstChild.firstChild.localName).eql("input");
     expect(doc.firstChild.firstChild.childNodes.length).eql(1);
     expect(doc.firstChild.firstChild.firstChild.localName).eql("p");
+  });
+});
+
+describe("baseURI parsing", function() {
+  it("should handle various types of relative and absolute base URIs", function() {
+    function checkBase(base, expectedResult) {
+      var html = "<html><head><base href='" + base + "'></base></head><body/></html>";
+      var doc = new JSDOMParser().parse(html, "http://fakehost/some/dir/");
+      expect(doc.baseURI).eql(expectedResult);
+    }
+
+    checkBase("relative/path", "http://fakehost/some/dir/relative/path");
+    checkBase("/path", "http://fakehost/path");
+    checkBase("http://absolute/", "http://absolute/");
+    checkBase("//absolute/path", "http://absolute/path");
+  });
+});
+
+describe("namespace workarounds", function() {
+  it("should handle random namespace information in the serialized DOM", function() {
+    var html = "<a0:html><a0:body><a0:DIV><a0:svG><a0:clippath/></a0:svG></a0:DIV></a0:body></a0:html>";
+    var doc = new JSDOMParser().parse(html);
+    var div = doc.getElementsByTagName("div")[0];
+    expect(div.tagName).eql("DIV");
+    expect(div.localName).eql("div");
+    expect(div.firstChild.tagName).eql("SVG");
+    expect(div.firstChild.localName).eql("svg");
+    expect(div.firstChild.firstChild.tagName).eql("CLIPPATH");
+    expect(div.firstChild.firstChild.localName).eql("clippath");
+    expect(doc.documentElement).eql(doc.firstChild);
+    expect(doc.body).eql(doc.documentElement.firstChild);
   });
 });
